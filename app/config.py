@@ -24,7 +24,47 @@ GEMINI_MODEL_NAME = "gemini-3.0-pro"  # Latest Gemini 3 Pro
 # Defines the allowed mode names for validation purposes.
 # The actual system prompt text associated with these modes is handled by the ChatService,
 # likely by importing from the prompts module.
-ALLOWED_MODES = Literal["Default", "Code", "Architect", "Debug", "Ask"]
+#
+# Built-in Roo Code modes:
+#   - Default: No system prompt (pass-through for Roo Code/Kilo Code)
+#   - Code: Write, modify, and refactor code
+#   - Architect: Plan and design before implementation
+#   - Ask: Get answers and explanations
+#   - Debug: Diagnose and fix software issues
+#   - Orchestrator: Coordinate tasks across multiple modes
+#
+# Additional marketplace modes (from https://app.roocode.com/api/marketplace/modes):
+#   - ModeWriter: Create and edit custom modes with validation
+#   - DocumentationWriter: Technical documentation expert
+#   - UserStoryCreator: Agile requirements specialist
+#   - ProjectResearch: Codebase analysis and investigation
+#   - SecurityReview: Security auditing and vulnerability detection
+#   - DevOps: Deployment, automation, and infrastructure
+#   - JestTestEngineer: Jest testing with TDD practices
+#   - GoogleGenAIDeveloper: Google GenAI SDK and Gemini API specialist
+#   - CodingTeacher: Patient coding teacher for guided learning
+#   - GitMergeResolver: Git merge conflict resolution specialist
+#
+ALLOWED_MODES = Literal[
+    "Default",
+    # Built-in Roo Code modes
+    "Code",
+    "Architect",
+    "Ask",
+    "Debug",
+    "Orchestrator",
+    # Marketplace modes
+    "ModeWriter",
+    "DocumentationWriter",
+    "UserStoryCreator",
+    "ProjectResearch",
+    "SecurityReview",
+    "DevOps",
+    "JestTestEngineer",
+    "GoogleGenAIDeveloper",
+    "CodingTeacher",
+    "GitMergeResolver",
+]
 
 # --- Roo Code / Kilo Code Compatibility ---
 # When this app is used as an OpenAI-compatible API provider for Roo Code (Kilo Code),

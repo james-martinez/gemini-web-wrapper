@@ -32,12 +32,34 @@ from app.models import ChatInfo, OpenAIMessage, TextBlock, ImageUrlBlock, ChatCo
 from app.config import ALLOWED_MODES, GEMINI_MODEL_NAME
 
 # Mapping from mode names to the actual prompt variables/text
-MODE_PROMPT_TEXTS: Dict[ALLOWED_MODES, Optional[str]] = {
+#
+# Built-in Roo Code modes have hardcoded prompts for web UI fallback.
+# Marketplace modes and "Default" use None because:
+#   - When used with Roo Code/Kilo Code: prompts are passed through automatically
+#   - When used with web UI: these modes act as simple pass-through (no system prompt)
+#
+MODE_PROMPT_TEXTS: Dict[str, Optional[str]] = {
+    # Built-in modes with hardcoded prompts (for web UI fallback)
     "Code": getattr(prompts, 'code', None),
     "Architect": getattr(prompts, 'architect', None),
     "Debug": getattr(prompts, 'debug', None),
     "Ask": getattr(prompts, 'ask', None),
-    "Default": None
+    
+    # Pass-through modes (no hardcoded prompt - Roo Code/Kilo Code sends their own)
+    "Default": None,
+    "Orchestrator": None,  # Built-in Roo Code mode
+    
+    # Marketplace modes (all pass-through - prompts come from Roo Code)
+    "ModeWriter": None,
+    "DocumentationWriter": None,
+    "UserStoryCreator": None,
+    "ProjectResearch": None,
+    "SecurityReview": None,
+    "DevOps": None,
+    "JestTestEngineer": None,
+    "GoogleGenAIDeveloper": None,
+    "CodingTeacher": None,
+    "GitMergeResolver": None,
 }
 # Check if any actual prompts failed to load *if* the import was expected to succeed
 if PROMPTS_LOADED and None in [MODE_PROMPT_TEXTS.get(m) for m in ["Code", "Architect", "Debug", "Ask"]]:
@@ -446,15 +468,9 @@ class ChatService:
                 files=temp_file_paths
             )
             response_text = getattr(api_response, 'text', "[No text in response]")
+            # Unescape any backslash-escaped XML/markdown characters from Gemini
+            response_text = self._unescape_response_text(response_text)
             print(f"Service: Response received from Gemini for chat {current_chat_id}.")
-
-            # --- Post-process response to fix escaped XML tags ---
-            # Some LLMs (like Llama 3.3 70B) incorrectly escape XML characters
-            # which breaks Roo Code / Kilo Code tool parsing
-            response_text = self._unescape_xml_tags(response_text)
-            
-            # Fix malformed code in tool outputs (for models like gemini-3.0-pro)
-            response_text = self._fix_malformed_code(response_text)
 
             # --- Update State Post-Gemini Call (Metadata ONLY) ---
             updated_metadata = chat_session.metadata
@@ -489,6 +505,38 @@ class ChatService:
             # 8. Cleanup Temp Files
             self._cleanup_temp_files(temp_file_paths)
 
+    def _unescape_response_text(self, text: str) -> str:
+        """
+        Unescape XML/markdown characters that Gemini may have escaped in tool use responses.
+        
+        Gemini sometimes returns responses with backslash-escaped characters like:
+        - \\< instead of <
+        - \\> instead of >
+        - \\_ instead of _
+        - \\* instead of *
+        - \\[ instead of [
+        - \\] instead of ]
+        
+        This method removes those escape sequences to produce valid XML tool calls
+        that Kilo Code (Roo Code) can parse correctly.
+        """
+        if not text:
+            return text
+        
+        # Unescape common markdown/XML special characters
+        # Order matters - we want to handle the backslash escapes
+        unescaped = text
+        unescaped = unescaped.replace("\\<", "<")
+        unescaped = unescaped.replace("\\>", ">")
+        unescaped = unescaped.replace("\\_", "_")
+        unescaped = unescaped.replace("\\*", "*")
+        unescaped = unescaped.replace("\\[", "[")
+        unescaped = unescaped.replace("\\]", "]")
+        unescaped = unescaped.replace("\\`", "`")
+        unescaped = unescaped.replace("\\#", "#")
+        
+        return unescaped
+
     def _cleanup_temp_files(self, file_paths: List[str]):
         """Safely removes temporary files created for image uploads."""
         if file_paths:
@@ -501,153 +549,3 @@ class ChatService:
                     print(f"Service Error removing temp file '{path}': {cleanup_e}")
                 except Exception as general_e:
                      print(f"Service Error during temp file '{path}' cleanup: {general_e}")
-
-    def _unescape_xml_tags(self, text: str) -> str:
-        """
-        Unescape XML tags that some LLMs (like Llama 3.3 70B) incorrectly escape.
-        
-        Some models escape XML special characters with backslashes when they should
-        output raw XML for tool calls. This method fixes common escape patterns:
-        - \< becomes <
-        - \> becomes >
-        - \_ becomes _
-        - \/ becomes /
-        
-        This is necessary for Roo Code / Kilo Code compatibility when models
-        output escaped XML tool call syntax like:
-            \<ask\_followup\_question\> instead of <ask_followup_question>
-        """
-        if not text:
-            return text
-        
-        # Check if text contains escaped XML patterns before processing
-        # This avoids unnecessary processing for models that don't escape
-        if '\\<' not in text and '\\>' not in text:
-            return text
-        
-        print("Service: Detected escaped XML in response, unescaping...")
-        
-        # Unescape the common patterns
-        unescaped = text
-        unescaped = re.sub(r'\\<', '<', unescaped)
-        unescaped = re.sub(r'\\>', '>', unescaped)
-        unescaped = re.sub(r'\\_', '_', unescaped)
-        unescaped = re.sub(r'\\/', '/', unescaped)
-        
-        # Also handle cases where backslashes might be doubled (\\< or \\>)
-        unescaped = re.sub(r'\\\\<', '<', unescaped)
-        unescaped = re.sub(r'\\\\>', '>', unescaped)
-        unescaped = re.sub(r'\\\\_', '_', unescaped)
-        
-        return unescaped
-
-    def _fix_malformed_code(self, text: str) -> str:
-        """
-        Fix malformed code in tool outputs from models like gemini-3.0-pro.
-        
-        Some models have issues with code generation in tool calls:
-        1. Python dunder methods (__init__) becoming **init** (markdown bold)
-        2. Escaped comments (backslash-hash) instead of hash
-        3. Markdown code blocks appearing inside tool content
-        4. Missing ======= separator in apply_diff
-        5. Escaped CDATA markers
-        """
-        if not text:
-            return text
-        
-        # Check if this looks like it contains any tool calls with code
-        tool_markers = ['<apply_diff>', '<<<<<<< SEARCH', '<write_to_file>', '<content>']
-        has_tool_content = any(marker in text for marker in tool_markers)
-        
-        if not has_tool_content:
-            return text
-        
-        print("Service: Checking for malformed code patterns in tool output...")
-        modified = text
-        fixes_applied = []
-        
-        # Fix 1: Convert **word** back to __word__ for Python dunders
-        dunder_pattern = r'\*\*(\w+)\*\*'
-        dunder_matches = re.findall(dunder_pattern, modified)
-        if dunder_matches:
-            common_dunders = ['init', 'main', 'name', 'str', 'repr', 'len', 'iter',
-                            'next', 'call', 'getattr', 'setattr', 'delattr', 'dict',
-                            'class', 'doc', 'module', 'file', 'all', 'enter', 'exit',
-                            'new', 'del', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'hash',
-                            'bool', 'contains', 'add', 'sub', 'mul', 'truediv', 'slots']
-            for match in dunder_matches:
-                if match.lower() in common_dunders:
-                    modified = modified.replace(f'**{match}**', f'__{match}__')
-                    fixes_applied.append(f'**{match}** -> __{match}__')
-        
-        # Fix 2: Fix escaped comments (backslash followed by hash -> just hash)
-        if '\\#' in modified:
-            modified = modified.replace('\\#', '#')
-            fixes_applied.append('unescaped comments')
-        
-        # Fix 3: Remove markdown code blocks from tool content
-        def clean_code_block(content_text):
-            cleaned = content_text
-            cleaned = re.sub(r'^```\s*$', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'^```\w*\s*\n', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'\n```\s*$', '', cleaned)
-            cleaned = re.sub(r'\n```\n', '\n', cleaned)
-            return cleaned
-        
-        # Clean <content> tags
-        content_pattern = r'(<content>)(.*?)(</content>)'
-        def clean_content_tag(match):
-            start, content, end = match.group(1), match.group(2), match.group(3)
-            cleaned = clean_code_block(content)
-            return start + cleaned + end if cleaned != content else match.group(0)
-        
-        new_modified = re.sub(content_pattern, clean_content_tag, modified, flags=re.DOTALL)
-        if new_modified != modified:
-            fixes_applied.append('removed markdown blocks from content')
-            modified = new_modified
-        
-        # Clean CDATA blocks
-        cdata_pattern = r'(<!\[CDATA\[)(.*?)(\]\]>)'
-        def clean_cdata_tag(match):
-            start, content, end = match.group(1), match.group(2), match.group(3)
-            cleaned = clean_code_block(content)
-            return start + cleaned + end if cleaned != content else match.group(0)
-        
-        new_modified = re.sub(cdata_pattern, clean_cdata_tag, modified, flags=re.DOTALL)
-        if new_modified != modified:
-            fixes_applied.append('removed markdown blocks from CDATA')
-            modified = new_modified
-        
-        # Clean SEARCH/REPLACE blocks
-        if '<<<<<<< SEARCH' in modified:
-            diff_pattern = r'(<<<<<<< SEARCH.*?>>>>>>> REPLACE)'
-            def clean_diff(match):
-                return clean_code_block(match.group(1))
-            new_modified = re.sub(diff_pattern, clean_diff, modified, flags=re.DOTALL)
-            if new_modified != modified:
-                fixes_applied.append('removed markdown blocks from diff')
-                modified = new_modified
-        
-        # Fix 4: Detect missing ======= separator
-        if '<<<<<<< SEARCH' in modified:
-            sep_pattern = r'<<<<<<< SEARCH\n(.*?)>>>>>>> REPLACE'
-            for match in re.finditer(sep_pattern, modified, flags=re.DOTALL):
-                if '=======' not in match.group(1):
-                    fixes_applied.append('WARNING: missing ======= separator')
-                    break
-        
-        # Fix 5: Fix escaped CDATA markers
-        if '\\![CDATA[' in modified:
-            modified = modified.replace('<\\![CDATA[', '<![CDATA[')
-            modified = modified.replace(']]\\>', ']]>')
-            fixes_applied.append('fixed escaped CDATA')
-        
-        # Fix 6: Fix escaped underscores
-        if '\\_' in modified:
-            modified = re.sub(r'(?<!_)\\_(?!_)', '_', modified)
-            fixes_applied.append('unescaped underscores')
-        
-        if fixes_applied:
-            print(f"Service: Applied code fixes: {', '.join(fixes_applied)}")
-        
-        return modified
