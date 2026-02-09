@@ -452,6 +452,9 @@ class ChatService:
             # Some LLMs (like Llama 3.3 70B) incorrectly escape XML characters
             # which breaks Roo Code / Kilo Code tool parsing
             response_text = self._unescape_xml_tags(response_text)
+            
+            # Fix malformed code in tool outputs (for models like gemini-3.0-pro)
+            response_text = self._fix_malformed_code(response_text)
 
             # --- Update State Post-Gemini Call (Metadata ONLY) ---
             updated_metadata = chat_session.metadata
@@ -537,3 +540,114 @@ class ChatService:
         unescaped = re.sub(r'\\\\_', '_', unescaped)
         
         return unescaped
+
+    def _fix_malformed_code(self, text: str) -> str:
+        """
+        Fix malformed code in tool outputs from models like gemini-3.0-pro.
+        
+        Some models have issues with code generation in tool calls:
+        1. Python dunder methods (__init__) becoming **init** (markdown bold)
+        2. Escaped comments (backslash-hash) instead of hash
+        3. Markdown code blocks appearing inside tool content
+        4. Missing ======= separator in apply_diff
+        5. Escaped CDATA markers
+        """
+        if not text:
+            return text
+        
+        # Check if this looks like it contains any tool calls with code
+        tool_markers = ['<apply_diff>', '<<<<<<< SEARCH', '<write_to_file>', '<content>']
+        has_tool_content = any(marker in text for marker in tool_markers)
+        
+        if not has_tool_content:
+            return text
+        
+        print("Service: Checking for malformed code patterns in tool output...")
+        modified = text
+        fixes_applied = []
+        
+        # Fix 1: Convert **word** back to __word__ for Python dunders
+        dunder_pattern = r'\*\*(\w+)\*\*'
+        dunder_matches = re.findall(dunder_pattern, modified)
+        if dunder_matches:
+            common_dunders = ['init', 'main', 'name', 'str', 'repr', 'len', 'iter',
+                            'next', 'call', 'getattr', 'setattr', 'delattr', 'dict',
+                            'class', 'doc', 'module', 'file', 'all', 'enter', 'exit',
+                            'new', 'del', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'hash',
+                            'bool', 'contains', 'add', 'sub', 'mul', 'truediv', 'slots']
+            for match in dunder_matches:
+                if match.lower() in common_dunders:
+                    modified = modified.replace(f'**{match}**', f'__{match}__')
+                    fixes_applied.append(f'**{match}** -> __{match}__')
+        
+        # Fix 2: Fix escaped comments (backslash followed by hash -> just hash)
+        if '\\#' in modified:
+            modified = modified.replace('\\#', '#')
+            fixes_applied.append('unescaped comments')
+        
+        # Fix 3: Remove markdown code blocks from tool content
+        def clean_code_block(content_text):
+            cleaned = content_text
+            cleaned = re.sub(r'^```\s*$', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'^```\w*\s*\n', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\n```\s*$', '', cleaned)
+            cleaned = re.sub(r'\n```\n', '\n', cleaned)
+            return cleaned
+        
+        # Clean <content> tags
+        content_pattern = r'(<content>)(.*?)(</content>)'
+        def clean_content_tag(match):
+            start, content, end = match.group(1), match.group(2), match.group(3)
+            cleaned = clean_code_block(content)
+            return start + cleaned + end if cleaned != content else match.group(0)
+        
+        new_modified = re.sub(content_pattern, clean_content_tag, modified, flags=re.DOTALL)
+        if new_modified != modified:
+            fixes_applied.append('removed markdown blocks from content')
+            modified = new_modified
+        
+        # Clean CDATA blocks
+        cdata_pattern = r'(<!\[CDATA\[)(.*?)(\]\]>)'
+        def clean_cdata_tag(match):
+            start, content, end = match.group(1), match.group(2), match.group(3)
+            cleaned = clean_code_block(content)
+            return start + cleaned + end if cleaned != content else match.group(0)
+        
+        new_modified = re.sub(cdata_pattern, clean_cdata_tag, modified, flags=re.DOTALL)
+        if new_modified != modified:
+            fixes_applied.append('removed markdown blocks from CDATA')
+            modified = new_modified
+        
+        # Clean SEARCH/REPLACE blocks
+        if '<<<<<<< SEARCH' in modified:
+            diff_pattern = r'(<<<<<<< SEARCH.*?>>>>>>> REPLACE)'
+            def clean_diff(match):
+                return clean_code_block(match.group(1))
+            new_modified = re.sub(diff_pattern, clean_diff, modified, flags=re.DOTALL)
+            if new_modified != modified:
+                fixes_applied.append('removed markdown blocks from diff')
+                modified = new_modified
+        
+        # Fix 4: Detect missing ======= separator
+        if '<<<<<<< SEARCH' in modified:
+            sep_pattern = r'<<<<<<< SEARCH\n(.*?)>>>>>>> REPLACE'
+            for match in re.finditer(sep_pattern, modified, flags=re.DOTALL):
+                if '=======' not in match.group(1):
+                    fixes_applied.append('WARNING: missing ======= separator')
+                    break
+        
+        # Fix 5: Fix escaped CDATA markers
+        if '\\![CDATA[' in modified:
+            modified = modified.replace('<\\![CDATA[', '<![CDATA[')
+            modified = modified.replace(']]\\>', ']]>')
+            fixes_applied.append('fixed escaped CDATA')
+        
+        # Fix 6: Fix escaped underscores
+        if '\\_' in modified:
+            modified = re.sub(r'(?<!_)\\_(?!_)', '_', modified)
+            fixes_applied.append('unescaped underscores')
+        
+        if fixes_applied:
+            print(f"Service: Applied code fixes: {', '.join(fixes_applied)}")
+        
+        return modified
