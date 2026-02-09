@@ -282,11 +282,70 @@ class ChatService:
             self._active_chat_id = None
             print(f"Service: Deactivated chat {chat_id} because it was deleted.")
 
-    # --- Method CORRECTED to REMOVE system prompt logic ---
+    def _extract_text_from_content(self, content) -> str:
+        """Extract text from message content (string or list of blocks)."""
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, TextBlock):
+                    text_parts.append(block.text)
+            return "\n".join(text_parts)
+        return ""
+
+    def _extract_images_from_content(self, content) -> List[str]:
+        """Extract base64 image data URIs from message content."""
+        image_urls = []
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, ImageUrlBlock) and block.image_url.url.startswith("data:image"):
+                    image_urls.append(block.image_url.url)
+        return image_urls
+
+    def _build_combined_prompt(self, messages: List[OpenAIMessage]) -> str:
+        """
+        Build a combined prompt from all messages in the request.
+        
+        When Roo Code (Kilo Code) sends requests, it includes system messages
+        with its own tool use instructions, followed by user messages with the
+        actual task. This method combines all messages into a single prompt
+        that preserves the full context for Gemini.
+        
+        Message roles are mapped as follows:
+        - system: Prepended as system instructions
+        - user: Included as user content
+        - assistant: Included as previous assistant responses (for context)
+        """
+        prompt_parts = []
+        
+        for msg in messages:
+            text = self._extract_text_from_content(msg.content)
+            if not text.strip():
+                continue
+                
+            if msg.role == "system":
+                prompt_parts.append(f"[System Instructions]\n{text}")
+            elif msg.role == "assistant":
+                prompt_parts.append(f"[Previous Assistant Response]\n{text}")
+            elif msg.role == "user":
+                prompt_parts.append(f"[User Message]\n{text}")
+        
+        return "\n\n".join(prompt_parts)
+
     async def handle_completion(self, db: aiosqlite.Connection, user_messages: List[OpenAIMessage]) -> ChatCompletionResponse:
         """
-        Handles sending ONLY the user's message to the active chat's Gemini session.
-        Updates metadata in DB/cache afterwards. System prompt logic is handled by set_active_chat or update_chat_mode.
+        Handles a chat completion request. Passes through ALL messages from the
+        request (system, user, assistant) to Gemini as a combined prompt.
+        
+        When used with Roo Code (Kilo Code), the system messages contain the
+        tool use instructions and mode-specific prompts that Roo Code generates.
+        These are passed through transparently to Gemini.
+        
+        When used with the web UI (no system messages in request), falls back to
+        the hardcoded prompt behavior via set_active_chat/update_chat_mode.
+        
+        Updates metadata in DB/cache afterwards.
         """
         if not self._active_chat_id:
             raise HTTPException(status_code=400, detail="No active chat session set. Use POST /v1/chats/active.")
@@ -315,50 +374,70 @@ class ChatService:
              print(f"Service Error loading chat session from metadata: {e}")
              raise HTTPException(status_code=500, detail=f"Failed to load active chat session state: {e}")
 
-        # 3. Process User Input (Text & Images)
+        # 3. Check if request contains system messages (Roo Code / Kilo Code mode)
+        has_system_messages = any(msg.role == "system" for msg in user_messages)
+        
+        # 4. Process images from the last user message
         last_user_message = next((msg for msg in reversed(user_messages) if msg.role == "user"), None)
-
-        if not last_user_message: raise HTTPException(status_code=400, detail="No user message found in the request.")
-        user_message_text = ""
-        image_urls_to_process = []
+        if not last_user_message:
+            raise HTTPException(status_code=400, detail="No user message found in the request.")
+        
+        image_urls_to_process = self._extract_images_from_content(last_user_message.content)
         temp_file_paths = []
+        
         try:
-            content = last_user_message.content
-            if isinstance(content, str): user_message_text = content
-            elif isinstance(content, list):
-                 for block in content:
-                    if isinstance(block, TextBlock): user_message_text += block.text + "\n"
-                    elif isinstance(block, ImageUrlBlock) and block.image_url.url.startswith("data:image"): image_urls_to_process.append(block.image_url.url)
-            user_message_text = user_message_text.strip()
             for img_url in image_urls_to_process:
-                 try:
-                     header, encoded = img_url.split(",", 1); img_data = base64.b64decode(encoded)
-                     mime_type = header.split(";")[0].split(":")[1] if ':' in header else 'application/octet-stream'; ext = mimetypes.guess_extension(mime_type) or ""
-                     safe_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.heic', '.heif']
-                     if ext.lower() in safe_extensions:
-                         fd, temp_path = tempfile.mkstemp(suffix=ext); os.write(fd, img_data); os.close(fd); temp_file_paths.append(temp_path)
-                         print(f"Service: Saved image data URI ({mime_type}) to temp file: {temp_path}")
-                     else: print(f"Service Warning: Skipping image with potentially unsafe extension '{ext or 'unknown'}' from mime type '{mime_type}'")
-                 except Exception as img_e: print(f"Service Error processing data URI: {img_e}. Skipping image.")
-            if not user_message_text and not temp_file_paths: raise HTTPException(status_code=400, detail="No processable content found.")
+                try:
+                    header, encoded = img_url.split(",", 1)
+                    img_data = base64.b64decode(encoded)
+                    mime_type = header.split(";")[0].split(":")[1] if ':' in header else 'application/octet-stream'
+                    ext = mimetypes.guess_extension(mime_type) or ""
+                    safe_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.heic', '.heif']
+                    if ext.lower() in safe_extensions:
+                        fd, temp_path = tempfile.mkstemp(suffix=ext)
+                        os.write(fd, img_data)
+                        os.close(fd)
+                        temp_file_paths.append(temp_path)
+                        print(f"Service: Saved image data URI ({mime_type}) to temp file: {temp_path}")
+                    else:
+                        print(f"Service Warning: Skipping image with potentially unsafe extension '{ext or 'unknown'}' from mime type '{mime_type}'")
+                except Exception as img_e:
+                    print(f"Service Error processing data URI: {img_e}. Skipping image.")
         except Exception as proc_e:
-             self._cleanup_temp_files(temp_file_paths); raise HTTPException(status_code=400, detail=f"Error processing user message content: {proc_e}")
+            self._cleanup_temp_files(temp_file_paths)
+            raise HTTPException(status_code=400, detail=f"Error processing image content: {proc_e}")
 
-        mode_switch_match = re.search(r"\[switch_mode to '(.*?)' because:.*?\]", user_message_text, re.IGNORECASE | re.DOTALL)
-
-        if mode_switch_match:
-            extracted_mode = mode_switch_match.group(1)
-            extracted_mode = extracted_mode.title()
-            new_mode_prompt = MODE_PROMPT_TEXTS.get(extracted_mode)
-            final_prompt_to_send = f"Now you are in {extracted_mode} mode. Use the following prompt:\n {new_mode_prompt}\n\n{user_message_text}"
-
+        # 5. Build the prompt based on whether system messages are present
+        if has_system_messages:
+            # --- Roo Code / Kilo Code pass-through mode ---
+            # Combine ALL messages (system + user + assistant) into a single prompt.
+            # This passes through Roo Code's tool use instructions, mode prompts,
+            # environment details, and user task transparently to Gemini.
+            final_prompt_to_send = self._build_combined_prompt(user_messages)
+            print(f"Service: Pass-through mode - combined {len(user_messages)} messages (including system) into prompt ({len(final_prompt_to_send)} chars)")
         else:
-            final_prompt_to_send = user_message_text
+            # --- Legacy web UI mode ---
+            # Only extract the last user message text, with optional mode switch detection
+            user_message_text = self._extract_text_from_content(last_user_message.content).strip()
+            
+            if not user_message_text and not temp_file_paths:
+                raise HTTPException(status_code=400, detail="No processable content found.")
+            
+            # Check for mode switch pattern (legacy web UI feature)
+            mode_switch_match = re.search(r"\[switch_mode to '(.*?)' because:.*?\]", user_message_text, re.IGNORECASE | re.DOTALL)
+            if mode_switch_match:
+                extracted_mode = mode_switch_match.group(1).title()
+                new_mode_prompt = MODE_PROMPT_TEXTS.get(extracted_mode)
+                final_prompt_to_send = f"Now you are in {extracted_mode} mode. Use the following prompt:\n {new_mode_prompt}\n\n{user_message_text}"
+            else:
+                final_prompt_to_send = user_message_text
+            
+            print(f"Service: Legacy mode - sending user message only ({len(final_prompt_to_send)} chars)")
 
-        # 4. Prepare Final Prompt (User message ONLY)
-        print("Service: Preparing user message only for completion endpoint.")
+        if not final_prompt_to_send.strip() and not temp_file_paths:
+            raise HTTPException(status_code=400, detail="No processable content found after building prompt.")
 
-        # 5. Send to Gemini & Handle Response/State Update
+        # 6. Send to Gemini & Handle Response/State Update
         try:
             print(f"Service: Sending message to Gemini for chat {current_chat_id}...")
             api_response = await self.gemini_wrapper.send_message(
@@ -368,6 +447,11 @@ class ChatService:
             )
             response_text = getattr(api_response, 'text', "[No text in response]")
             print(f"Service: Response received from Gemini for chat {current_chat_id}.")
+
+            # --- Post-process response to fix escaped XML tags ---
+            # Some LLMs (like Llama 3.3 70B) incorrectly escape XML characters
+            # which breaks Roo Code / Kilo Code tool parsing
+            response_text = self._unescape_xml_tags(response_text)
 
             # --- Update State Post-Gemini Call (Metadata ONLY) ---
             updated_metadata = chat_session.metadata
@@ -382,7 +466,7 @@ class ChatService:
             else:
                  print(f"Service ERROR: Failed to update metadata in DB for {current_chat_id}. Cache may be stale.")
 
-            # 6. Format Final API Response
+            # 7. Format Final API Response
             assistant_message = OpenAIMessage(role="assistant", content=response_text)
             choice = Choice(message=assistant_message)
             usage = Usage()
@@ -399,7 +483,7 @@ class ChatService:
              traceback.print_exc()
              raise HTTPException(status_code=500, detail=f"Unexpected server error during chat completion: {e}")
         finally:
-            # 7. Cleanup Temp Files
+            # 8. Cleanup Temp Files
             self._cleanup_temp_files(temp_file_paths)
 
     def _cleanup_temp_files(self, file_paths: List[str]):
@@ -414,3 +498,42 @@ class ChatService:
                     print(f"Service Error removing temp file '{path}': {cleanup_e}")
                 except Exception as general_e:
                      print(f"Service Error during temp file '{path}' cleanup: {general_e}")
+
+    def _unescape_xml_tags(self, text: str) -> str:
+        """
+        Unescape XML tags that some LLMs (like Llama 3.3 70B) incorrectly escape.
+        
+        Some models escape XML special characters with backslashes when they should
+        output raw XML for tool calls. This method fixes common escape patterns:
+        - \< becomes <
+        - \> becomes >
+        - \_ becomes _
+        - \/ becomes /
+        
+        This is necessary for Roo Code / Kilo Code compatibility when models
+        output escaped XML tool call syntax like:
+            \<ask\_followup\_question\> instead of <ask_followup_question>
+        """
+        if not text:
+            return text
+        
+        # Check if text contains escaped XML patterns before processing
+        # This avoids unnecessary processing for models that don't escape
+        if '\\<' not in text and '\\>' not in text:
+            return text
+        
+        print("Service: Detected escaped XML in response, unescaping...")
+        
+        # Unescape the common patterns
+        unescaped = text
+        unescaped = re.sub(r'\\<', '<', unescaped)
+        unescaped = re.sub(r'\\>', '>', unescaped)
+        unescaped = re.sub(r'\\_', '_', unescaped)
+        unescaped = re.sub(r'\\/', '/', unescaped)
+        
+        # Also handle cases where backslashes might be doubled (\\< or \\>)
+        unescaped = re.sub(r'\\\\<', '<', unescaped)
+        unescaped = re.sub(r'\\\\>', '>', unescaped)
+        unescaped = re.sub(r'\\\\_', '_', unescaped)
+        
+        return unescaped
