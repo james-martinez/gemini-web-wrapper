@@ -32,8 +32,6 @@ from gemini_client import (
     extract_text_from_messages,
     extract_images_from_messages,
     cleanup_temp_files,
-    unescape_xml_content,
-    clean_markdown_from_code,
 )
 
 
@@ -167,23 +165,10 @@ async def generate_response(
     try:
         text = await gemini_client.generate_content(prompt, image_files)
         
-        # Debug: Log the raw response content
+        # Debug: Log the response content
         if settings.debug:
             print("=" * 60)
-            print("[DEBUG] Non-streaming RAW response content:")
-            print("=" * 60)
-            print(text)
-            print("=" * 60)
-        
-        # Unescape XML characters that Gemini escapes
-        text = unescape_xml_content(text)
-        
-        # Clean up Markdown formatting artifacts from code content
-        text = clean_markdown_from_code(text)
-        
-        # Debug: Log the processed response content
-        if settings.debug:
-            print("[DEBUG] Non-streaming PROCESSED response content:")
+            print("[DEBUG] Non-streaming response content:")
             print("=" * 60)
             print(text)
             print("=" * 60)
@@ -245,20 +230,10 @@ async def generate_stream(
         # Stream content chunks
         async for text_delta in gemini_client.generate_content_stream(prompt, image_files):
             if text_delta:
-                # Debug: Log raw chunk
-                if settings.debug:
-                    print(f"[DEBUG] Stream RAW chunk ({len(text_delta)} chars): {repr(text_delta[:100])}{'...' if len(text_delta) > 100 else ''}")
-                
-                # Unescape XML characters that Gemini escapes
-                text_delta = unescape_xml_content(text_delta)
-                
-                # Clean up Markdown formatting artifacts from code content
-                text_delta = clean_markdown_from_code(text_delta)
-                
-                # Debug: Accumulate processed content for logging
+                # Debug: Log chunk
                 if settings.debug:
                     full_response.append(text_delta)
-                    print(f"[DEBUG] Stream PROCESSED chunk ({len(text_delta)} chars): {repr(text_delta[:100])}{'...' if len(text_delta) > 100 else ''}")
+                    print(f"[DEBUG] Stream chunk ({len(text_delta)} chars): {repr(text_delta[:100])}{'...' if len(text_delta) > 100 else ''}")
                 
                 chunk = ChatCompletionChunk(
                     id=chunk_id,

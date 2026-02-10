@@ -1,18 +1,42 @@
 """Gemini Web API client wrapper."""
 import base64
+import re
 import tempfile
 import os
 import traceback
 from typing import Optional, List, AsyncGenerator, Any
 
 from gemini_webapi import GeminiClient
-from gemini_webapi.types import ModelOutput
 from gemini_webapi.utils import set_log_level
 
 from config import settings
 
 # Suppress debug logs from gemini_webapi unless configured otherwise
 set_log_level(settings.gemini_log_level)
+
+
+def unescape_xml_response(text: str) -> str:
+    """
+    Unescape XML tags that Gemini escapes with backslashes.
+    
+    Gemini sometimes returns XML like:
+        \\<ask\\_followup\\_question\\>
+        \\<question\\>...\\</question\\>
+    
+    This converts it back to proper XML:
+        <ask_followup_question>
+        <question>...</question>
+    """
+    if not text:
+        return text
+    
+    # Remove backslashes before < and >
+    result = text.replace("\\<", "<").replace("\\>", ">")
+    
+    # Remove backslashes before underscores
+    result = result.replace("\\_", "_")
+    
+    return result
 
 
 class GeminiClientWrapper:
@@ -109,6 +133,8 @@ class GeminiClientWrapper:
             )
             
             text = response.text if response else ""
+            # Unescape any backslash-escaped XML in the response
+            text = unescape_xml_response(text)
             print(f"[Gemini] Response received ({len(text)} chars)")
             return text
             
@@ -153,7 +179,8 @@ class GeminiClientWrapper:
                 if hasattr(output, 'candidates') and output.candidates:
                     candidate = output.candidates[0]
                     if hasattr(candidate, 'text_delta') and candidate.text_delta:
-                        yield candidate.text_delta
+                        # Unescape any backslash-escaped XML in the response
+                        yield unescape_xml_response(candidate.text_delta)
             
             print("[Gemini] Streaming completed")
             
@@ -265,66 +292,6 @@ def cleanup_temp_files(file_paths: List[str]):
                 os.remove(path)
         except Exception as e:
             print(f"[Gemini] Error removing temp file {path}: {e}")
-
-
-def unescape_xml_content(text: str) -> str:
-    """
-    Unescape XML/special characters that Gemini escapes in its response.
-    
-    Gemini sometimes escapes characters like < > _ with backslashes.
-    This function removes those escape backslashes to restore proper XML formatting.
-    """
-    if not text:
-        return text
-    
-    # Unescape common patterns:
-    # \< -> <
-    # \> -> >
-    # \_ -> _
-    # \\ -> \ (must be done last to avoid double-unescaping)
-    
-    result = text
-    result = result.replace('\\<', '<')
-    result = result.replace('\\>', '>')
-    result = result.replace('\\_', '_')
-    # Only unescape double backslashes if they exist and aren't part of other escapes
-    # result = result.replace('\\\\', '\\')
-    
-    return result
-
-
-def clean_markdown_from_code(text: str) -> str:
-    """
-    Clean up Markdown formatting artifacts from code content.
-    
-    Gemini sometimes outputs Markdown formatting inside code blocks like:
-    - **__init__** instead of __init__
-    - ```python ... ``` code fences embedded in actual code
-    - **name** instead of __name__
-    
-    This function removes these artifacts to produce clean code.
-    """
-    import re
-    
-    if not text:
-        return text
-    
-    result = text
-    
-    # Fix Python dunder methods that get Markdown-bolded
-    # **__init__** -> __init__
-    # **init** -> __init__ (when meant to be dunder)
-    result = re.sub(r'\*\*__(\w+)__\*\*', r'__\1__', result)
-    result = re.sub(r'\*\*(\w+)\*\*', lambda m: f'__{m.group(1)}__' if m.group(1) in ['init', 'main', 'name', 'str', 'repr', 'len', 'iter', 'next', 'call', 'enter', 'exit', 'getitem', 'setitem', 'delitem', 'contains', 'eq', 'ne', 'lt', 'gt', 'le', 'ge', 'hash', 'bool', 'add', 'sub', 'mul', 'truediv', 'floordiv', 'mod', 'pow', 'and', 'or', 'xor', 'invert', 'lshift', 'rshift', 'neg', 'pos', 'abs', 'new', 'del', 'getattr', 'setattr', 'delattr', 'dict', 'class', 'bases', 'doc', 'module', 'slots', 'all', 'file', 'package', 'path', 'cached', 'loader', 'spec', 'annotations', 'builtins', 'import', 'qualname'] else m.group(0), result)
-    
-    # Remove stray markdown code fence markers that appear inside code
-    # This handles cases like: ```python\ndef foo():\n``` embedded in actual code
-    # We need to be careful not to remove legitimate string content
-    # Only remove if they appear at the start of a line (common for Gemini mistakes)
-    result = re.sub(r'^```\w*\s*$', '', result, flags=re.MULTILINE)
-    result = re.sub(r'^```\s*$', '', result, flags=re.MULTILINE)
-    
-    return result
 
 
 # Global client instance
