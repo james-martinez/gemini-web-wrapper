@@ -17,15 +17,19 @@ set_log_level(settings.gemini_log_level)
 
 def unescape_xml_response(text: str) -> str:
     """
-    Unescape XML tags that Gemini escapes with backslashes.
+    Unescape characters that Gemini escapes with backslashes.
     
     Gemini sometimes returns XML like:
         \\<ask\\_followup\\_question\\>
         \\<question\\>...\\</question\\>
     
-    This converts it back to proper XML:
+    And escaped characters like:
+        Hello, World\\!
+    
+    This converts it back to proper text:
         <ask_followup_question>
         <question>...</question>
+        Hello, World!
     """
     if not text:
         return text
@@ -35,6 +39,30 @@ def unescape_xml_response(text: str) -> str:
     
     # Remove backslashes before underscores
     result = result.replace("\\_", "_")
+    
+    # Remove backslashes before other common characters
+    # These are characters that Gemini sometimes unnecessarily escapes
+    result = result.replace("\\!", "!")
+    result = result.replace("\\?", "?")
+    result = result.replace("\\.", ".")
+    result = result.replace("\\,", ",")
+    result = result.replace("\\;", ";")
+    result = result.replace("\\:", ":")
+    result = result.replace("\\'", "'")
+    result = result.replace('\\"', '"')
+    result = result.replace("\\(", "(")
+    result = result.replace("\\)", ")")
+    result = result.replace("\\[", "[")
+    result = result.replace("\\]", "]")
+    result = result.replace("\\{", "{")
+    result = result.replace("\\}", "}")
+    result = result.replace("\\#", "#")
+    result = result.replace("\\*", "*")
+    result = result.replace("\\+", "+")
+    result = result.replace("\\-", "-")
+    result = result.replace("\\=", "=")
+    result = result.replace("\\|", "|")
+    result = result.replace("\\\\", "\\")  # Double backslash to single (do this last)
     
     return result
 
@@ -179,7 +207,7 @@ class GeminiClientWrapper:
                 if hasattr(output, 'candidates') and output.candidates:
                     candidate = output.candidates[0]
                     if hasattr(candidate, 'text_delta') and candidate.text_delta:
-                        # Unescape any backslash-escaped XML in the response
+                        # Unescape any backslash-escaped characters in the response
                         yield unescape_xml_response(candidate.text_delta)
             
             print("[Gemini] Streaming completed")
