@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     secure_1psidts: str = get_secure_1psidts()
     
     # Server settings
-    host: str = os.getenv("HOST", "0.0.0.0")
+    host: str = os.getenv("HOST", "127.0.0.1")
     port: int = int(os.getenv("PORT", "8000"))
     
     # Optional proxy
@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     watchdog_timeout: int = 300  # Watchdog timeout for thinking models (increased)
     
     # Model name to report in OpenAI-compatible responses
-    model_name: str = "gemini-3.0-flash-thinking"
+    model_name: str = "gemini-3.0-pro"
     
     # Log level for gemini-webapi (DEBUG, INFO, WARNING, ERROR)
     gemini_log_level: str = os.getenv("GEMINI_LOG_LEVEL", "WARNING")
