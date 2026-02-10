@@ -1,0 +1,266 @@
+"""
+Gemini OpenAI-Compatible API Server
+
+Provides an OpenAI-compatible REST API that proxies requests to Google Gemini.
+Compatible with clients like Roo Code, Kilo Code, and Cline.
+"""
+import json
+import time
+import uuid
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+from config import settings
+from models import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatCompletionChunk,
+    Choice,
+    ChoiceMessage,
+    StreamChoice,
+    DeltaMessage,
+    Usage,
+    ModelsResponse,
+    ModelInfo,
+)
+from gemini_client import (
+    gemini_client,
+    extract_text_from_messages,
+    extract_images_from_messages,
+    cleanup_temp_files,
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager."""
+    print("=" * 60)
+    print("Starting Gemini OpenAI-Compatible API Server")
+    print("=" * 60)
+    
+    # Initialize Gemini client
+    success = await gemini_client.initialize()
+    if not success:
+        print("WARNING: Gemini client failed to initialize!")
+        print("Check your SECURE_1PSID and SECURE_1PSIDTS environment variables")
+    
+    yield
+    
+    # Cleanup
+    print("Shutting down server...")
+    await gemini_client.close()
+    print("Server shutdown complete")
+
+
+app = FastAPI(
+    title="Gemini OpenAI-Compatible API",
+    description="OpenAI-compatible API that proxies to Google Gemini",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Enable CORS for all origins (needed for web-based clients)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ============================================================================
+# Health Check
+# ============================================================================
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy" if gemini_client.is_ready else "degraded",
+        "gemini_ready": gemini_client.is_ready,
+    }
+
+
+# ============================================================================
+# Models Endpoint
+# ============================================================================
+
+@app.get("/v1/models")
+async def list_models():
+    """List available models (OpenAI-compatible)."""
+    return ModelsResponse(
+        data=[
+            ModelInfo(id="gemini-3.0-flash-thinking"),
+            ModelInfo(id="gemini-3.0-pro"),
+            ModelInfo(id="gemini-3.0-flash"),
+        ]
+    )
+
+
+@app.get("/v1/models/{model_id}")
+async def get_model(model_id: str):
+    """Get a specific model (OpenAI-compatible)."""
+    return ModelInfo(id=model_id)
+
+
+# ============================================================================
+# Chat Completions Endpoint
+# ============================================================================
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest):
+    """
+    OpenAI-compatible chat completions endpoint.
+    
+    Supports both streaming and non-streaming responses.
+    """
+    print(f"[API] POST /v1/chat/completions (model={request.model}, stream={request.stream})")
+    
+    if not gemini_client.is_ready:
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini client not initialized. Check server logs."
+        )
+    
+    # Extract prompt and images from messages
+    prompt = extract_text_from_messages(request.messages)
+    image_files = extract_images_from_messages(request.messages)
+    
+    print(f"[API] Prompt: {len(prompt)} chars, Images: {len(image_files)}")
+    
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail="No content in messages")
+    
+    try:
+        if request.stream:
+            return StreamingResponse(
+                generate_stream(prompt, image_files, request.model),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                }
+            )
+        else:
+            return await generate_response(prompt, image_files, request.model)
+            
+    except Exception as e:
+        cleanup_temp_files(image_files)
+        print(f"[API] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def generate_response(
+    prompt: str,
+    image_files: list,
+    model: str
+) -> ChatCompletionResponse:
+    """Generate a non-streaming response."""
+    try:
+        text = await gemini_client.generate_content(prompt, image_files)
+        
+        # Include reasoning_content for thinking models (o1-style)
+        reasoning = text if "thinking" in model.lower() else None
+        
+        return ChatCompletionResponse(
+            model=model,
+            choices=[
+                Choice(
+                    index=0,
+                    message=ChoiceMessage(role="assistant", content=text),
+                    finish_reason="stop"
+                )
+            ],
+            usage=Usage(
+                prompt_tokens=len(prompt) // 4,  # Rough estimate
+                completion_tokens=len(text) // 4,
+                total_tokens=(len(prompt) + len(text)) // 4
+            ),
+            reasoning_content=reasoning
+        )
+    finally:
+        cleanup_temp_files(image_files)
+
+
+async def generate_stream(
+    prompt: str,
+    image_files: list,
+    model: str
+) -> AsyncGenerator[str, None]:
+    """Generate a streaming SSE response."""
+    chunk_id = f"chatcmpl-{uuid.uuid4()}"
+    created = int(time.time())
+    
+    try:
+        # Send initial chunk with role
+        initial_chunk = ChatCompletionChunk(
+            id=chunk_id,
+            created=created,
+            model=model,
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta=DeltaMessage(role="assistant"),
+                    finish_reason=None
+                )
+            ]
+        )
+        yield f"data: {initial_chunk.model_dump_json()}\n\n"
+        
+        # Stream content chunks
+        async for text_delta in gemini_client.generate_content_stream(prompt, image_files):
+            if text_delta:
+                chunk = ChatCompletionChunk(
+                    id=chunk_id,
+                    created=created,
+                    model=model,
+                    choices=[
+                        StreamChoice(
+                            index=0,
+                            delta=DeltaMessage(content=text_delta),
+                            finish_reason=None
+                        )
+                    ]
+                )
+                yield f"data: {chunk.model_dump_json()}\n\n"
+        
+        # Send final chunk with finish_reason
+        final_chunk = ChatCompletionChunk(
+            id=chunk_id,
+            created=created,
+            model=model,
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta=DeltaMessage(),
+                    finish_reason="stop"
+                )
+            ]
+        )
+        yield f"data: {final_chunk.model_dump_json()}\n\n"
+        yield "data: [DONE]\n\n"
+        
+    finally:
+        cleanup_temp_files(image_files)
+
+
+# ============================================================================
+# Run Server
+# ============================================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    print(f"Starting server on {settings.host}:{settings.port}")
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=False,
+    )
