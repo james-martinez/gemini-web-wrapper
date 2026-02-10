@@ -507,25 +507,32 @@ class ChatService:
 
     def _unescape_response_text(self, text: str) -> str:
         """
-        Unescape XML/markdown characters that Gemini may have escaped in tool use responses.
+        Unescape and fix markdown/XML characters that Gemini may have transformed.
         
-        Gemini sometimes returns responses with backslash-escaped characters like:
-        - \\< instead of <
-        - \\> instead of >
-        - \\_ instead of _
-        - \\* instead of *
-        - \\[ instead of [
-        - \\] instead of ]
+        Gemini sometimes returns responses with:
+        1. Backslash-escaped characters: \\< instead of <, \\> instead of >
+        2. Markdown bold for Python dunders: **init** instead of __init__
+        3. Stray code fence markers: ``` wrapping code blocks
         
-        This method removes those escape sequences to produce valid XML tool calls
+        This method fixes these issues to produce valid code and XML tool calls
         that Kilo Code (Roo Code) can parse correctly.
         """
         if not text:
             return text
         
-        # Unescape common markdown/XML special characters
-        # Order matters - we want to handle the backslash escapes
         unescaped = text
+        
+        # 1. Fix Python dunder methods: **name** -> __name__
+        # This handles cases like **init**, **main**, **str__, etc.
+        # Pattern: **word** at word boundaries (not inside other formatting)
+        unescaped = re.sub(r'\*\*([a-zA-Z_][a-zA-Z0-9_]*)\*\*', r'__\1__', unescaped)
+        
+        # 2. Remove stray code fence markers that Gemini adds
+        # Remove standalone ``` lines (with optional language specifier)
+        unescaped = re.sub(r'^```[a-zA-Z]*\s*$', '', unescaped, flags=re.MULTILINE)
+        unescaped = re.sub(r'^```\s*$', '', unescaped, flags=re.MULTILINE)
+        
+        # 3. Unescape backslash-escaped markdown/XML special characters
         unescaped = unescaped.replace("\\<", "<")
         unescaped = unescaped.replace("\\>", ">")
         unescaped = unescaped.replace("\\_", "_")
