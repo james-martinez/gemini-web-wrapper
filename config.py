@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     # Log level for gemini-webapi (DEBUG, INFO, WARNING, ERROR)
     gemini_log_level: str = os.getenv("GEMINI_LOG_LEVEL", "WARNING")
     
+    # Debug mode - enables verbose logging of request/response content
+    debug: bool = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
+    
     class Config:
         env_file = ".env"
         extra = "ignore"

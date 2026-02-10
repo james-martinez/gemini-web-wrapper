@@ -267,5 +267,31 @@ def cleanup_temp_files(file_paths: List[str]):
             print(f"[Gemini] Error removing temp file {path}: {e}")
 
 
+def unescape_xml_content(text: str) -> str:
+    """
+    Unescape XML/special characters that Gemini escapes in its response.
+    
+    Gemini sometimes escapes characters like < > _ with backslashes.
+    This function removes those escape backslashes to restore proper XML formatting.
+    """
+    if not text:
+        return text
+    
+    # Unescape common patterns:
+    # \< -> <
+    # \> -> >
+    # \_ -> _
+    # \\ -> \ (must be done last to avoid double-unescaping)
+    
+    result = text
+    result = result.replace('\\<', '<')
+    result = result.replace('\\>', '>')
+    result = result.replace('\\_', '_')
+    # Only unescape double backslashes if they exist and aren't part of other escapes
+    # result = result.replace('\\\\', '\\')
+    
+    return result
+
+
 # Global client instance
 gemini_client = GeminiClientWrapper()

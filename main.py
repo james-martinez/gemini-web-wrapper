@@ -32,6 +32,7 @@ from gemini_client import (
     extract_text_from_messages,
     extract_images_from_messages,
     cleanup_temp_files,
+    unescape_xml_content,
 )
 
 
@@ -165,6 +166,26 @@ async def generate_response(
     try:
         text = await gemini_client.generate_content(prompt, image_files)
         
+        # Debug: Log the raw response content
+        if settings.debug:
+            print("=" * 60)
+            print("[DEBUG] Non-streaming RAW response content:")
+            print("=" * 60)
+            print(text)
+            print("=" * 60)
+        
+        # Unescape XML characters that Gemini escapes
+        text = unescape_xml_content(text)
+        
+        # Debug: Log the processed response content
+        if settings.debug:
+            print("[DEBUG] Non-streaming PROCESSED response content:")
+            print("=" * 60)
+            print(text)
+            print("=" * 60)
+            print(f"[DEBUG] Response length: {len(text)} chars")
+            print("=" * 60)
+        
         # Include reasoning_content for thinking models (o1-style)
         reasoning = text if "thinking" in model.lower() else None
         
@@ -197,6 +218,9 @@ async def generate_stream(
     chunk_id = f"chatcmpl-{uuid.uuid4()}"
     created = int(time.time())
     
+    # Debug: Accumulate full response for logging
+    full_response = []
+    
     try:
         # Send initial chunk with role
         initial_chunk = ChatCompletionChunk(
@@ -211,11 +235,24 @@ async def generate_stream(
                 )
             ]
         )
-        yield f"data: {initial_chunk.model_dump_json()}\n\n"
+        # Use json.dumps with ensure_ascii=False to preserve unicode and special chars
+        yield f"data: {json.dumps(initial_chunk.model_dump(), ensure_ascii=False)}\n\n"
         
         # Stream content chunks
         async for text_delta in gemini_client.generate_content_stream(prompt, image_files):
             if text_delta:
+                # Debug: Log raw chunk
+                if settings.debug:
+                    print(f"[DEBUG] Stream RAW chunk ({len(text_delta)} chars): {repr(text_delta[:100])}{'...' if len(text_delta) > 100 else ''}")
+                
+                # Unescape XML characters that Gemini escapes
+                text_delta = unescape_xml_content(text_delta)
+                
+                # Debug: Accumulate processed content for logging
+                if settings.debug:
+                    full_response.append(text_delta)
+                    print(f"[DEBUG] Stream PROCESSED chunk ({len(text_delta)} chars): {repr(text_delta[:100])}{'...' if len(text_delta) > 100 else ''}")
+                
                 chunk = ChatCompletionChunk(
                     id=chunk_id,
                     created=created,
@@ -228,7 +265,19 @@ async def generate_stream(
                         )
                     ]
                 )
-                yield f"data: {chunk.model_dump_json()}\n\n"
+                # Use json.dumps with ensure_ascii=False to preserve unicode and special chars
+                yield f"data: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n"
+        
+        # Debug: Log full accumulated response
+        if settings.debug:
+            complete_text = "".join(full_response)
+            print("=" * 60)
+            print("[DEBUG] Streaming complete - Full response content:")
+            print("=" * 60)
+            print(complete_text)
+            print("=" * 60)
+            print(f"[DEBUG] Total response length: {len(complete_text)} chars, chunks: {len(full_response)}")
+            print("=" * 60)
         
         # Send final chunk with finish_reason
         final_chunk = ChatCompletionChunk(
@@ -243,7 +292,8 @@ async def generate_stream(
                 )
             ]
         )
-        yield f"data: {final_chunk.model_dump_json()}\n\n"
+        # Use json.dumps with ensure_ascii=False to preserve unicode and special chars
+        yield f"data: {json.dumps(final_chunk.model_dump(), ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
         
     finally:
