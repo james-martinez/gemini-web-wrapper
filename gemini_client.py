@@ -293,5 +293,39 @@ def unescape_xml_content(text: str) -> str:
     return result
 
 
+def clean_markdown_from_code(text: str) -> str:
+    """
+    Clean up Markdown formatting artifacts from code content.
+    
+    Gemini sometimes outputs Markdown formatting inside code blocks like:
+    - **__init__** instead of __init__
+    - ```python ... ``` code fences embedded in actual code
+    - **name** instead of __name__
+    
+    This function removes these artifacts to produce clean code.
+    """
+    import re
+    
+    if not text:
+        return text
+    
+    result = text
+    
+    # Fix Python dunder methods that get Markdown-bolded
+    # **__init__** -> __init__
+    # **init** -> __init__ (when meant to be dunder)
+    result = re.sub(r'\*\*__(\w+)__\*\*', r'__\1__', result)
+    result = re.sub(r'\*\*(\w+)\*\*', lambda m: f'__{m.group(1)}__' if m.group(1) in ['init', 'main', 'name', 'str', 'repr', 'len', 'iter', 'next', 'call', 'enter', 'exit', 'getitem', 'setitem', 'delitem', 'contains', 'eq', 'ne', 'lt', 'gt', 'le', 'ge', 'hash', 'bool', 'add', 'sub', 'mul', 'truediv', 'floordiv', 'mod', 'pow', 'and', 'or', 'xor', 'invert', 'lshift', 'rshift', 'neg', 'pos', 'abs', 'new', 'del', 'getattr', 'setattr', 'delattr', 'dict', 'class', 'bases', 'doc', 'module', 'slots', 'all', 'file', 'package', 'path', 'cached', 'loader', 'spec', 'annotations', 'builtins', 'import', 'qualname'] else m.group(0), result)
+    
+    # Remove stray markdown code fence markers that appear inside code
+    # This handles cases like: ```python\ndef foo():\n``` embedded in actual code
+    # We need to be careful not to remove legitimate string content
+    # Only remove if they appear at the start of a line (common for Gemini mistakes)
+    result = re.sub(r'^```\w*\s*$', '', result, flags=re.MULTILINE)
+    result = re.sub(r'^```\s*$', '', result, flags=re.MULTILINE)
+    
+    return result
+
+
 # Global client instance
 gemini_client = GeminiClientWrapper()

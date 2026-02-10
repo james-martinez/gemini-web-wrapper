@@ -33,6 +33,7 @@ from gemini_client import (
     extract_images_from_messages,
     cleanup_temp_files,
     unescape_xml_content,
+    clean_markdown_from_code,
 )
 
 
@@ -177,6 +178,9 @@ async def generate_response(
         # Unescape XML characters that Gemini escapes
         text = unescape_xml_content(text)
         
+        # Clean up Markdown formatting artifacts from code content
+        text = clean_markdown_from_code(text)
+        
         # Debug: Log the processed response content
         if settings.debug:
             print("[DEBUG] Non-streaming PROCESSED response content:")
@@ -247,6 +251,9 @@ async def generate_stream(
                 
                 # Unescape XML characters that Gemini escapes
                 text_delta = unescape_xml_content(text_delta)
+                
+                # Clean up Markdown formatting artifacts from code content
+                text_delta = clean_markdown_from_code(text_delta)
                 
                 # Debug: Accumulate processed content for logging
                 if settings.debug:
