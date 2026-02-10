@@ -15,6 +15,79 @@ from config import settings
 set_log_level(settings.gemini_log_level)
 
 
+def clean_markdown_in_xml_tags(text: str) -> str:
+    """
+    Clean markdown formatting from inside XML tool tags.
+    
+    Gemini sometimes formats URLs and other content as markdown inside XML tags:
+        <url>[https://google.com](https://google.com)</url>
+    
+    This extracts the actual value:
+        <url>https://google.com</url>
+    
+    Also handles redundant markdown links anywhere in the text where the
+    display text and URL are the same (e.g., [https://x.com](https://x.com) -> https://x.com)
+    """
+    if not text:
+        return text
+    
+    result = text
+    
+    # First, clean redundant markdown links globally
+    # Pattern: [url](url) where the text and URL are identical or very similar
+    # This handles cases like: [https://api.example.com](https://api.example.com)
+    def clean_redundant_markdown_link(match):
+        display_text = match.group(1)
+        url = match.group(2)
+        # If display text is a URL that matches (or is contained in) the href URL
+        if display_text.startswith('http') and (display_text == url or display_text in url or url in display_text):
+            return url
+        return match.group(0)
+    
+    # Match markdown links where display text looks like a URL
+    result = re.sub(r'\[(https?://[^\]]+)\]\(([^)]+)\)', clean_redundant_markdown_link, result)
+    
+    # Pattern to find XML tags with markdown links inside
+    # Matches: <tagname>[text](url)</tagname>
+    # Extracts just the URL from the markdown link
+    def replace_markdown_link(match):
+        tag_name = match.group(1)
+        content = match.group(2)
+        closing_tag = match.group(3)
+        
+        # Check if content is a markdown link: [text](url)
+        md_link = re.search(r'\[([^\]]*)\]\(([^)]+)\)', content)
+        if md_link:
+            # Use the URL part (group 2), not the display text
+            actual_url = md_link.group(2)
+            return f"<{tag_name}>{actual_url}</{closing_tag}>"
+        return match.group(0)
+    
+    # Match XML tags that might contain markdown links
+    # This handles tags like <url>, <path>, <link>, etc.
+    tag_pattern = r'<(\w+)>(\[[^\]]*\]\([^)]+\))</(\w+)>'
+    result = re.sub(tag_pattern, replace_markdown_link, result)
+    
+    # Also handle cases where markdown link is mixed with other content
+    # e.g., <url>Visit [https://google.com](https://google.com) now</url>
+    def clean_inline_markdown(match):
+        tag_name = match.group(1)
+        content = match.group(2)
+        closing_tag = match.group(3)
+        
+        # Replace all markdown links in the content with just the URL
+        cleaned = re.sub(r'\[([^\]]*)\]\(([^)]+)\)', r'\2', content)
+        return f"<{tag_name}>{cleaned}</{closing_tag}>"
+    
+    # Only apply to specific tags where markdown links shouldn't appear
+    url_tags = ['url', 'path', 'file', 'link', 'href', 'src', 'command', 'cwd']
+    for tag in url_tags:
+        pattern = rf'<({tag})>(.*?)</({tag})>'
+        result = re.sub(pattern, clean_inline_markdown, result, flags=re.DOTALL | re.IGNORECASE)
+    
+    return result
+
+
 def unescape_xml_response(text: str) -> str:
     """
     Unescape characters that Gemini escapes with backslashes.
@@ -35,7 +108,8 @@ def unescape_xml_response(text: str) -> str:
         return text
     
     # Remove backslashes before < and >
-    result = text.replace("\\<", "<").replace("\\>", ">")
+    result = text
+    result = result.replace("\\<", "<").replace("\\>", ">")
     
     # Remove backslashes before underscores
     result = result.replace("\\_", "_")
@@ -63,6 +137,9 @@ def unescape_xml_response(text: str) -> str:
     result = result.replace("\\=", "=")
     result = result.replace("\\|", "|")
     result = result.replace("\\\\", "\\")  # Double backslash to single (do this last)
+    
+    # Clean markdown formatting from inside XML tool tags
+    result = clean_markdown_in_xml_tags(result)
     
     return result
 
