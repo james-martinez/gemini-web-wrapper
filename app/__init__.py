@@ -1,1 +1,0 @@
-# This file makes Python treat the directory 'app' as a package.
