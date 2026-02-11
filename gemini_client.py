@@ -3,6 +3,7 @@ import base64
 import tempfile
 import os
 import traceback
+import asyncio
 from typing import Optional, List, AsyncGenerator, Any
 
 from gemini_webapi import GeminiClient
@@ -12,34 +13,6 @@ from config import settings
 
 # Suppress debug logs from gemini_webapi unless configured otherwise
 set_log_level(settings.gemini_log_level)
-
-
-def unescape_xml_response(text: str) -> str:
-    """
-    Unescape backslash-escaped XML characters in the response.
-    
-    Some API responses may have XML angle brackets escaped with backslashes.
-    This function converts them back to their original form.
-    
-    Parameters
-    ----------
-    text : str
-        The text to unescape
-        
-    Returns
-    -------
-    str
-        The unescaped text
-    """
-    if not text:
-        return text
-    
-    # Unescape XML angle brackets and underscores
-    result = text.replace('\\<', '<')    # Escaped less-than
-    result = result.replace('\\>', '>')   # Escaped greater-than
-    result = result.replace('\\_', '_')   # Escaped underscore
-    
-    return result
 
 
 class GeminiClientWrapper:
@@ -136,8 +109,6 @@ class GeminiClientWrapper:
             )
             
             text = response.text if response else ""
-            # Unescape any backslash-escaped XML in the response
-            text = unescape_xml_response(text)
             print(f"[Gemini] Response received ({len(text)} chars)")
             return text
             
@@ -154,7 +125,8 @@ class GeminiClientWrapper:
         """
         Generate content using Gemini with streaming.
         
-        Yields text deltas as they arrive from the API.
+        Yields text deltas as they arrive from the API, with fixes for
+        spurious newlines that the gemini_webapi library introduces.
         
         Parameters
         ----------
@@ -182,8 +154,7 @@ class GeminiClientWrapper:
                 if hasattr(output, 'candidates') and output.candidates:
                     candidate = output.candidates[0]
                     if hasattr(candidate, 'text_delta') and candidate.text_delta:
-                        # Unescape any backslash-escaped characters in the response
-                        yield unescape_xml_response(candidate.text_delta)
+                        yield candidate.text_delta
             
             print("[Gemini] Streaming completed")
             
