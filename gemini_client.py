@@ -15,6 +15,81 @@ from config import settings
 set_log_level(settings.gemini_log_level)
 
 
+def strip_markdown_code_fences(text: str) -> str:
+    """
+    Remove ALL markdown code fences from text, preserving the content inside.
+    
+    Gemini often wraps code in markdown code blocks like:
+        ```python
+        code here
+        ```
+    
+    Or for XML tool responses:
+        ```xml
+        <write_to_file>...</write_to_file>
+        ```
+    
+    This function aggressively strips ALL code fences, whether they wrap
+    the entire response or appear inline with other content.
+    """
+    if not text:
+        return text
+    
+    def replace_code_block(match):
+        """Replace a code block with just its content."""
+        content = match.group(1)
+        # Remove leading newline after language specifier if present
+        if content.startswith('\n'):
+            content = content[1:]
+        # Remove trailing newline before closing fence if present
+        if content.endswith('\n'):
+            content = content[:-1]
+        return content
+    
+    # Pattern matches: ```[language]\n...content...\n```
+    # The [\w]* captures optional language specifier (python, xml, etc.)
+    # The (.*?) captures the content non-greedily
+    pattern = r'```[\w]*\n?(.*?)\n?```'
+    result = re.sub(pattern, replace_code_block, text, flags=re.DOTALL)
+    
+    return result
+
+
+def strip_inline_code_from_xml(text: str) -> str:
+    """
+    Remove inline code backticks from around XML tool tags.
+    
+    Gemini sometimes wraps XML in single backticks like:
+        `<write_to_file>...</write_to_file>`
+    
+    This extracts the XML without the backticks.
+    """
+    if not text:
+        return text
+    
+    # Pattern to find XML tags wrapped in single backticks
+    # Matches: `<tag>...</tag>` and replaces with <tag>...</tag>
+    # Only for known tool tags to avoid stripping intentional inline code
+    tool_tags = [
+        'write_to_file', 'read_file', 'apply_diff', 'execute_command',
+        'search_files', 'list_files', 'ask_followup_question',
+        'attempt_completion', 'browser_action', 'delete_file',
+        'fetch_instructions', 'switch_mode', 'new_task', 'update_todo_list'
+    ]
+    
+    result = text
+    for tag in tool_tags:
+        # Match `<tag>...</tag>` pattern
+        pattern = rf'`(<{tag}>.*?</{tag}>)`'
+        result = re.sub(pattern, r'\1', result, flags=re.DOTALL)
+        
+        # Also handle `<tag>...<tag/>` self-closing variant
+        pattern_self = rf'`(<{tag}\s*/?>)`'
+        result = re.sub(pattern_self, r'\1', result, flags=re.DOTALL)
+    
+    return result
+
+
 def clean_markdown_in_xml_tags(text: str) -> str:
     """
     Clean markdown formatting from inside XML tool tags.
@@ -140,6 +215,12 @@ def unescape_xml_response(text: str) -> str:
     
     # Clean markdown formatting from inside XML tool tags
     result = clean_markdown_in_xml_tags(result)
+    
+    # Strip outer markdown code fences if the entire response is wrapped
+    result = strip_markdown_code_fences(result)
+    
+    # Strip inline code backticks from around XML tool tags
+    result = strip_inline_code_from_xml(result)
     
     return result
 
