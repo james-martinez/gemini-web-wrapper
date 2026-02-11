@@ -93,21 +93,23 @@ def strip_inline_code_from_xml(text: str) -> str:
 def clean_markdown_in_xml_tags(text: str) -> str:
     """
     Clean markdown formatting from inside XML tool tags.
-    
+
     Gemini sometimes formats URLs and other content as markdown inside XML tags:
         <url>[https://google.com](https://google.com)</url>
-    
+
     This extracts the actual value:
         <url>https://google.com</url>
-    
+
     Also handles redundant markdown links anywhere in the text where the
     display text and URL are the same (e.g., [https://x.com](https://x.com) -> https://x.com)
+
+    Additionally handles file path references that get incorrectly formatted as URLs
     """
     if not text:
         return text
-    
+
     result = text
-    
+
     # First, clean redundant markdown links globally
     # Pattern: [url](url) where the text and URL are identical or very similar
     # This handles cases like: [https://api.example.com](https://api.example.com)
@@ -118,10 +120,10 @@ def clean_markdown_in_xml_tags(text: str) -> str:
         if display_text.startswith('http') and (display_text == url or display_text in url or url in display_text):
             return url
         return match.group(0)
-    
+
     # Match markdown links where display text looks like a URL
     result = re.sub(r'\[(https?://[^\]]+)\]\(([^)]+)\)', clean_redundant_markdown_link, result)
-    
+
     # Pattern to find XML tags with markdown links inside
     # Matches: <tagname>[text](url)</tagname>
     # Extracts just the URL from the markdown link
@@ -129,7 +131,7 @@ def clean_markdown_in_xml_tags(text: str) -> str:
         tag_name = match.group(1)
         content = match.group(2)
         closing_tag = match.group(3)
-        
+
         # Check if content is a markdown link: [text](url)
         md_link = re.search(r'\[([^\]]*)\]\(([^)]+)\)', content)
         if md_link:
@@ -137,58 +139,86 @@ def clean_markdown_in_xml_tags(text: str) -> str:
             actual_url = md_link.group(2)
             return f"<{tag_name}>{actual_url}</{closing_tag}>"
         return match.group(0)
-    
+
     # Match XML tags that might contain markdown links
     # This handles tags like <url>, <path>, <link>, etc.
     tag_pattern = r'<(\w+)>(\[[^\]]*\]\([^)]+\))</(\w+)>'
     result = re.sub(tag_pattern, replace_markdown_link, result)
-    
+
     # Also handle cases where markdown link is mixed with other content
     # e.g., <url>Visit [https://google.com](https://google.com) now</url>
     def clean_inline_markdown(match):
         tag_name = match.group(1)
         content = match.group(2)
         closing_tag = match.group(3)
-        
+
         # Replace all markdown links in the content with just the URL
         cleaned = re.sub(r'\[([^\]]*)\]\(([^)]+)\)', r'\2', content)
         return f"<{tag_name}>{cleaned}</{closing_tag}>"
-    
+
     # Only apply to specific tags where markdown links shouldn't appear
     url_tags = ['url', 'path', 'file', 'link', 'href', 'src', 'command', 'cwd']
     for tag in url_tags:
         pattern = rf'<({tag})>(.*?)</({tag})>'
         result = re.sub(pattern, clean_inline_markdown, result, flags=re.DOTALL | re.IGNORECASE)
-    
+
+    # Handle file path references that get incorrectly formatted as URLs
+    # Pattern: [filename](https://www.google.com/search?q=filename)
+    def fix_file_path_url(match):
+        filename = match.group(1)
+        url = match.group(2)
+        # If the URL is a Google search for the filename, return just the filename
+        if "www.google.com/search?q=" in url and filename in url:
+            return filename
+        return match.group(0)
+
+    # Match markdown links where the URL is a Google search for the filename
+    result = re.sub(r'\[([^\]]+)\]\((https?://www\.google\.com/search\?q=[^\]]+)\)', fix_file_path_url, result)
+
+    # Remove any remaining file path references that aren't actual URLs
+    # This handles cases where file paths are incorrectly formatted as URLs
+    def clean_file_path_references(match):
+        path = match.group(1)
+        # Remove any URL scheme if present
+        if path.startswith('https://') or path.startswith('http://'):
+            return path.split('/')[-1]
+        return path
+
+    # Match and clean file path references
+    result = re.sub(r'\[([^\]]+)\]\((https?://[^\]]+)\)', clean_file_path_references, result)
+
     return result
 
 
 def unescape_xml_response(text: str) -> str:
     """
     Unescape characters that Gemini escapes with backslashes.
-    
+
     Gemini sometimes returns XML like:
         \\<ask\\_followup\\_question\\>
         \\<question\\>...\\</question\\>
-    
+
     And escaped characters like:
         Hello, World\\!
-    
+
     This converts it back to proper text:
         <ask_followup_question>
         <question>...</question>
         Hello, World!
+
+    Also handles diff formatting errors by removing extra markdown and
+    correcting malformed XML tool responses.
     """
     if not text:
         return text
-    
+
     # Remove backslashes before < and >
     result = text
     result = result.replace("\\<", "<").replace("\\>", ">")
-    
+
     # Remove backslashes before underscores
     result = result.replace("\\_", "_")
-    
+
     # Remove backslashes before other common characters
     # These are characters that Gemini sometimes unnecessarily escapes
     result = result.replace("\\!", "!")
@@ -212,16 +242,30 @@ def unescape_xml_response(text: str) -> str:
     result = result.replace("\\=", "=")
     result = result.replace("\\|", "|")
     result = result.replace("\\\\", "\\")  # Double backslash to single (do this last)
-    
+
     # Clean markdown formatting from inside XML tool tags
     result = clean_markdown_in_xml_tags(result)
-    
+
     # Strip outer markdown code fences if the entire response is wrapped
     result = strip_markdown_code_fences(result)
-    
+
     # Strip inline code backticks from around XML tool tags
     result = strip_inline_code_from_xml(result)
-    
+
+    # Fix diff formatting errors by removing extra markdown and correcting XML
+    def fix_diff_formatting(text: str) -> str:
+        # Remove extra markdown that corrupts XML tool responses
+        text = re.sub(r'```[\w]*\n?', '', text)  # Remove code block headers
+        text = re.sub(r'\n?```', '', text)  # Remove code block footers
+        # Remove extra angle brackets that appear in malformed diffs
+        text = re.sub(r'> > > > > > >', '>>>>>>>', text)
+        text = re.sub(r'< < < < < < <', '<<<<<<<', text)
+        # Remove extra spaces in XML tags
+        text = re.sub(r'\s+', ' ', text)
+        return text
+
+    result = fix_diff_formatting(result)
+
     return result
 
 
