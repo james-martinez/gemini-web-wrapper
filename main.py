@@ -8,6 +8,7 @@ client that speaks the OpenAI Chat Completions protocol.
 
 import json
 import time
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -24,6 +25,7 @@ from gemini_client import (
     extract_images_from_messages,
     extract_text_from_messages,
     gemini_client,
+    unescape_gemini_markdown,
 )
 from models import (
     ChatCompletionChunk,
@@ -116,17 +118,22 @@ async def chat_completions(request: ChatCompletionRequest):
     prompt = extract_text_from_messages(request.messages)
     images = extract_images_from_messages(request.messages)
 
+    # Always log incoming requests for diagnostics
+    print(
+        f"[API] >>> REQUEST: model={request.model}  stream={request.stream}"
+        f"  messages={len(request.messages)}  prompt_len={len(prompt)}  images={len(images)}"
+    )
     if settings.debug:
-        print(
-            f"[API] model={request.model}  stream={request.stream}"
-            f"  prompt_len={len(prompt)}  images={len(images)}"
-        )
+        # Show truncated prompt in debug mode
+        preview = prompt[:500] + ("..." if len(prompt) > 500 else "")
+        print(f"[API] >>> PROMPT PREVIEW:\n{preview}")
 
     if not prompt.strip():
         raise HTTPException(400, "No content in messages")
 
     try:
         if request.stream:
+            print(f"[API] Starting streaming response...")
             return StreamingResponse(
                 _stream(prompt, images, request.model),
                 media_type="text/event-stream",
@@ -136,10 +143,18 @@ async def chat_completions(request: ChatCompletionRequest):
                     "X-Accel-Buffering": "no",
                 },
             )
-        return await _complete(prompt, images, request.model)
+        print(f"[API] Starting non-streaming response...")
+        result = await _complete(prompt, images, request.model)
+        print(f"[API] <<< RESPONSE: status=200  model={result.model}  choices={len(result.choices)}  usage={result.usage.total_tokens} tokens")
+        if settings.debug and result.choices:
+            resp_preview = result.choices[0].message.content[:500] + ("..." if len(result.choices[0].message.content) > 500 else "")
+            print(f"[API] <<< RESPONSE PREVIEW:\n{resp_preview}")
+        return result
     except Exception as exc:
         cleanup_temp_files(images)
-        print(f"[API] Error: {exc}")
+        print(f"[API] <<< ERROR: {type(exc).__name__}: {exc}")
+        if settings.debug:
+            traceback.print_exc()
         raise HTTPException(500, str(exc))
 
 
@@ -154,9 +169,6 @@ async def _complete(prompt: str, images: list, model: str) -> ChatCompletionResp
         text = await gemini_client.generate(
             prompt, model_name=model, image_files=images
         )
-
-        if settings.debug:
-            print(f"[API] Response ({len(text)} chars)")
 
         return ChatCompletionResponse(
             model=model,
