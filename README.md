@@ -1,138 +1,95 @@
-# Gemini OpenAI-Compatible API
+# Gemini OpenAI-Compatible API Server
 
-An OpenAI-compatible REST API server that proxies requests to Google Gemini.
+An OpenAI-compatible REST API server that proxies requests to **Google Gemini** using [`gemini-webapi`](https://github.com/HanaokaYuzu/Gemini-API).  
+Works with **Roo Code**, **Kilo Code**, **Cline**, and any client that speaks the OpenAI Chat Completions protocol.
 
-Compatible with AI coding assistants like:
-- **Roo Code**
-- **Kilo Code**  
-- **Cline**
-- Any other OpenAI API-compatible client
+## Available Models
 
-## Features
-
-- ✅ OpenAI-compatible `/v1/chat/completions` endpoint
-- ✅ Streaming (SSE) and non-streaming responses
-- ✅ Image/vision support via base64 data URIs
-- ✅ Multiple message roles (system, user, assistant)
-- ✅ Model listing endpoint `/v1/models`
+| Model ID | Description |
+|---|---|
+| `gemini-3.0-pro` | Gemini 3.0 Pro |
+| `gemini-3.0-flash` | Gemini 3.0 Flash |
+| `gemini-3.0-flash-thinking` | Gemini 3.0 Flash Thinking |
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment
+### 2. Configure authentication
 
-Copy the example environment file and add your Gemini cookies:
+Copy `.env.example` to `.env` and fill in your Gemini cookies:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and add your authentication cookies:
+Get the cookies from your browser when logged into [gemini.google.com](https://gemini.google.com):
 
-```
-SECURE_1PSID=your_cookie_value_here
-SECURE_1PSIDTS=your_cookie_value_here
-```
+- **Chrome**: F12 → Application → Cookies → `https://gemini.google.com`
+- Copy `__Secure-1PSID` → `SECURE_1PSID`
+- Copy `__Secure-1PSIDTS` → `SECURE_1PSIDTS`
 
-**How to get cookies:**
-1. Go to [gemini.google.com](https://gemini.google.com) and sign in
-2. Open browser Developer Tools (F12)
-3. Go to Application > Cookies > gemini.google.com
-4. Copy the values for `__Secure-1PSID` and `__Secure-1PSIDTS`
-
-### 3. Run the Server
+### 3. Start the server
 
 ```bash
 python main.py
 ```
 
-Or with uvicorn directly:
+The server starts on `http://0.0.0.0:8000` by default.
 
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
+### 4. Configure your client
 
-The server will start at `http://localhost:8000`
+In Roo Code / Kilo Code / Cline, add a custom OpenAI-compatible provider:
+
+| Setting | Value |
+|---|---|
+| Base URL | `http://localhost:8000/v1` |
+| API Key | `anything` (not validated) |
+| Model | `gemini-3.0-flash` |
 
 ## API Endpoints
 
-### Chat Completions
-```
-POST /v1/chat/completions
-```
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Health check |
+| `GET` | `/v1/models` | List available models |
+| `GET` | `/v1/models/{id}` | Get model info |
+| `POST` | `/v1/chat/completions` | Chat completions (streaming & non-streaming) |
 
-OpenAI-compatible chat completion endpoint. Supports streaming.
+## Testing
 
-**Example Request:**
-```json
-{
-  "model": "gemini-3.0-flash-thinking",
-  "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello!"}
-  ],
-  "stream": true
-}
+Start the server, then run:
+
+```bash
+python test_api.py
 ```
 
-### List Models
+## Configuration
+
+All settings are in `.env`:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SECURE_1PSID` | — | Required. Gemini auth cookie |
+| `SECURE_1PSIDTS` | — | Required. Gemini auth cookie |
+| `HOST` | `0.0.0.0` | Server bind address |
+| `PORT` | `8000` | Server port |
+| `PROXY_URL` | — | Optional HTTP proxy |
+| `GEMINI_LOG_LEVEL` | `WARNING` | Log level for gemini-webapi |
+| `DEBUG` | `false` | Verbose request/response logging |
+
+## Project Structure
+
 ```
-GET /v1/models
-```
-
-Returns available models.
-
-### Health Check
-```
-GET /health
-```
-
-Returns server health status.
-
-## Configuring AI Assistants
-
-### Roo Code / Kilo Code
-
-1. Open settings
-2. Set API Base URL to: `http://localhost:8000/v1`
-3. Set API Key to any value (e.g., `dummy-key`)
-4. Select model: `gemini-3.0-flash-thinking`
-
-### Cline
-
-1. Open Cline settings
-2. Set provider to "OpenAI Compatible"
-3. Set Base URL: `http://localhost:8000/v1`
-4. Set API Key: `dummy-key`
-5. Set Model: `gemini-3.0-flash-thinking`
-
-## Available Models
-
-- **gemini-3.0-flash-thinking** - Flash model with thinking/reasoning capabilities
-- **gemini-3.0-pro** - Pro model for complex tasks
-- **gemini-3.0-flash** - Fast flash model
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SECURE_1PSID` | Gemini authentication cookie | Required |
-| `SECURE_1PSIDTS` | Gemini authentication cookie | Required |
-| `HOST` | Server host | `0.0.0.0` |
-| `PORT` | Server port | `8000` |
-| `PROXY_URL` | Optional proxy URL | None |
-
-## Limitations
-
-- This uses the web interface to Gemini, not the official API
-- Cookies may expire and need to be refreshed periodically
-- Rate limits depend on your Google account
-
-## License
-
-MIT
+├── main.py            # FastAPI application & routes
+├── config.py          # Settings from .env
+├── models.py          # OpenAI-compatible Pydantic models
+├── gemini_client.py   # gemini-webapi wrapper
+├── test_api.py        # Integration tests
+├── requirements.txt   # Python dependencies
+├── .env.example       # Environment template
+└── .env               # Your local config (git-ignored)

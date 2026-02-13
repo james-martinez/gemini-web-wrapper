@@ -1,16 +1,19 @@
 """OpenAI-compatible request and response models."""
+
 import time
 import uuid
-from typing import List, Optional, Union, Literal
+from typing import List, Literal, Optional, Union
+
 from pydantic import BaseModel, Field
 
 
 # ============================================================================
-# Request Models (OpenAI Chat Completion API compatible)
+# Request Models
 # ============================================================================
 
+
 class ContentPartText(BaseModel):
-    """Text content part."""
+    """Text content part in a multi-part message."""
     type: Literal["text"] = "text"
     text: str
 
@@ -22,7 +25,7 @@ class ImageUrl(BaseModel):
 
 
 class ContentPartImage(BaseModel):
-    """Image content part."""
+    """Image content part in a multi-part message."""
     type: Literal["image_url"] = "image_url"
     image_url: ImageUrl
 
@@ -31,7 +34,7 @@ ContentPart = Union[ContentPartText, ContentPartImage]
 
 
 class ChatMessage(BaseModel):
-    """A single message in the chat."""
+    """A single message in the chat conversation."""
     role: Literal["system", "user", "assistant"]
     content: Union[str, List[ContentPart]]
     name: Optional[str] = None
@@ -39,7 +42,7 @@ class ChatMessage(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
-    model: str = "gemini-3.0-flash-thinking"
+    model: str = "gemini-3.0-flash"
     messages: List[ChatMessage]
     temperature: Optional[float] = None
     top_p: Optional[float] = None
@@ -53,8 +56,9 @@ class ChatCompletionRequest(BaseModel):
 
 
 # ============================================================================
-# Response Models (OpenAI Chat Completion API compatible)
+# Response Models — Non-streaming
 # ============================================================================
+
 
 class Usage(BaseModel):
     """Token usage information."""
@@ -84,16 +88,15 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: List[Choice]
     usage: Usage = Field(default_factory=Usage)
-    # O1‑style reasoning content for thinking models
-    reasoning_content: Optional[str] = None
 
 
 # ============================================================================
-# Streaming Response Models
+# Response Models — Streaming
 # ============================================================================
+
 
 class DeltaMessage(BaseModel):
-    """Delta message for streaming."""
+    """Delta message for streaming chunks."""
     role: Optional[str] = None
     content: Optional[str] = None
 
@@ -115,8 +118,9 @@ class ChatCompletionChunk(BaseModel):
 
 
 # ============================================================================
-# Models List Response
+# Models List
 # ============================================================================
+
 
 class ModelInfo(BaseModel):
     """Information about a model."""
